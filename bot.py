@@ -1,181 +1,99 @@
 import os
 import logging
 import requests
-from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
 
-# Load secrets
-load_dotenv()
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Load API credentials from environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
-TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
+TRELLO_API_TOKEN = os.getenv("TRELLO_API_TOKEN")
 
+# Trello API base
 BASE_URL = "https://api.trello.com/1"
-logging.basicConfig(level=logging.INFO)
 
-# --- Trello API helpers ---
+# Trello API Functions
 def get_boards():
-    url = f"{BASE_URL}/members/me/boards"
-    params = {"key": TRELLO_API_KEY, "token": TRELLO_TOKEN}
-    return requests.get(url, params=params).json()
-
-def get_board_id(board_name):
-    boards = get_boards()
-    board = next((b for b in boards if b["name"] == board_name), None)
-    return board["id"] if board else None
+    url = f"{BASE_URL}/members/me/boards?key={TRELLO_API_KEY}&token={TRELLO_API_TOKEN}"
+    return requests.get(url).json()
 
 def get_lists(board_id):
-    url = f"{BASE_URL}/boards/{board_id}/lists"
-    params = {"key": TRELLO_API_KEY, "token": TRELLO_TOKEN}
-    return requests.get(url, params=params).json()
-
-def get_list_id(board_id, list_name):
-    lists = get_lists(board_id)
-    for lst in lists:
-        if lst["name"] == list_name:
-            return lst["id"]
-    return None
+    url = f"{BASE_URL}/boards/{board_id}/lists?key={TRELLO_API_KEY}&token={TRELLO_API_TOKEN}"
+    return requests.get(url).json()
 
 def get_cards(list_id):
-    url = f"{BASE_URL}/lists/{list_id}/cards"
-    params = {"key": TRELLO_API_KEY, "token": TRELLO_TOKEN}
-    return requests.get(url, params=params).json()
+    url = f"{BASE_URL}/lists/{list_id}/cards?key={TRELLO_API_KEY}&token={TRELLO_API_TOKEN}"
+    return requests.get(url).json()
 
-def create_card(list_id, card_name):
-    url = f"{BASE_URL}/cards"
-    params = {
-        "key": TRELLO_API_KEY,
-        "token": TRELLO_TOKEN,
-        "idList": list_id,
-        "name": card_name
-    }
-    return requests.post(url, params=params)
-
-def move_card(card_name, src_list_id, dest_list_id):
-    cards = get_cards(src_list_id)
-    card = next((c for c in cards if c["name"] == card_name), None)
-    if not card:
-        return None
-    url = f"{BASE_URL}/cards/{card['id']}"
-    params = {"key": TRELLO_API_KEY, "token": TRELLO_TOKEN, "idList": dest_list_id}
-    return requests.put(url, params=params)
-
-def comment_card(card_id, comment):
-    url = f"{BASE_URL}/cards/{card_id}/actions/comments"
-    params = {"key": TRELLO_API_KEY, "token": TRELLO_TOKEN, "text": comment}
-    return requests.post(url, params=params)
-
-def delete_card(card_name, list_id):
-    cards = get_cards(list_id)
-    card = next((c for c in cards if c["name"] == card_name), None)
-    if not card:
-        return None
-    url = f"{BASE_URL}/cards/{card['id']}"
-    params = {"key": TRELLO_API_KEY, "token": TRELLO_TOKEN}
-    return requests.delete(url, params=params)
-
-# --- Telegram Handlers ---
+# Telegram Command: /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Hi! I'm your Trello Bot. Use /help to see what I can do.")
+    await update.message.reply_text("Hello! I'm your Trello bot 🤖")
 
+# Telegram Command: /help
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = """
-Available Commands:
-/start - Welcome message
-/help - This help message
-/list_boards - Show Trello boards
-/list_cards <board> <list> - Show cards in a list
-/add_card <board> <list> <name> - Create card
-/move_card <board> <from_list> <to_list> <card_name>
-/comment_card <board> <list> <card_name> <comment>
-/delete_card <board> <list> <card_name>
-"""
+    help_text = (
+        "Commands:\n"
+        "/start - Start the bot\n"
+        "/help - Show help\n"
+        "/list_boards - Show your Trello boards (with buttons)\n"
+    )
     await update.message.reply_text(help_text)
 
-async def list_boards(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# /list_boards — show board buttons
+async def list_boards_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     boards = get_boards()
-    msg = "📋 Trello Boards:\n" + "\n".join([f"- {b['name']}" for b in boards])
-    await update.message.reply_text(msg)
+    keyboard = [
+        [InlineKeyboardButton(board['name'], callback_data=f"board:{board['id']}")]
+        for board in boards
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Select a board:", reply_markup=reply_markup)
 
-async def list_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 2:
-        return await update.message.reply_text("Usage: /list_cards <board> <list>")
-    board_name, list_name = context.args[0], context.args[1]
-    board_id = get_board_id(board_name)
-    if not board_id:
-        return await update.message.reply_text("Board not found.")
-    list_id = get_list_id(board_id, list_name)
-    if not list_id:
-        return await update.message.reply_text("List not found.")
+# Handle board selection → show lists
+async def board_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    board_id = query.data.split(":")[1]
+    await query.answer()
+
+    lists = get_lists(board_id)
+    keyboard = [
+        [InlineKeyboardButton(lst['name'], callback_data=f"list:{lst['id']}")]
+        for lst in lists
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text("Select a list:", reply_markup=reply_markup)
+
+# Handle list selection → show cards
+async def list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    list_id = query.data.split(":")[1]
+    await query.answer()
+
     cards = get_cards(list_id)
-    msg = "📝 Cards:\n" + "\n".join([f"- {c['name']}" for c in cards])
-    await update.message.reply_text(msg or "No cards.")
+    if not cards:
+        await query.edit_message_text("No cards found.")
+    else:
+        card_texts = [f"- {card['name']}" for card in cards]
+        await query.edit_message_text("Cards:\n" + "\n".join(card_texts))
 
-async def add_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 3:
-        return await update.message.reply_text("Usage: /add_card <board> <list> <card name>")
-    board_name, list_name = context.args[0], context.args[1]
-    card_name = " ".join(context.args[2:])
-    board_id = get_board_id(board_name)
-    if not board_id:
-        return await update.message.reply_text("Board not found.")
-    list_id = get_list_id(board_id, list_name)
-    if not list_id:
-        return await update.message.reply_text("List not found.")
-    res = create_card(list_id, card_name)
-    await update.message.reply_text("✅ Card created." if res.status_code == 200 else "❌ Failed to create card.")
-
-async def move_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 4:
-        return await update.message.reply_text("Usage: /move_card <board> <from_list> <to_list> <card_name>")
-    board_name, from_list, to_list = context.args[0], context.args[1], context.args[2]
-    card_name = " ".join(context.args[3:])
-    board_id = get_board_id(board_name)
-    if not board_id:
-        return await update.message.reply_text("Board not found.")
-    src_list_id = get_list_id(board_id, from_list)
-    dest_list_id = get_list_id(board_id, to_list)
-    if not src_list_id or not dest_list_id:
-        return await update.message.reply_text("List(s) not found.")
-    res = move_card(card_name, src_list_id, dest_list_id)
-    await update.message.reply_text("✅ Card moved." if res and res.status_code == 200 else "❌ Failed to move card.")
-
-async def comment_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 4:
-        return await update.message.reply_text("Usage: /comment_card <board> <list> <card_name> <comment>")
-    board_name, list_name = context.args[0], context.args[1]
-    card_name = context.args[2]
-    comment = " ".join(context.args[3:])
-    board_id = get_board_id(board_name)
-    list_id = get_list_id(board_id, list_name)
-    cards = get_cards(list_id)
-    card = next((c for c in cards if c['name'] == card_name), None)
-    if not card:
-        return await update.message.reply_text("Card not found.")
-    res = comment_card(card['id'], comment)
-    await update.message.reply_text("💬 Comment added." if res.status_code == 200 else "❌ Failed to comment.")
-
-async def delete_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 3:
-        return await update.message.reply_text("Usage: /delete_card <board> <list> <card_name>")
-    board_name, list_name = context.args[0], context.args[1]
-    card_name = " ".join(context.args[2:])
-    board_id = get_board_id(board_name)
-    list_id = get_list_id(board_id, list_name)
-    res = delete_card(card_name, list_id)
-    await update.message.reply_text("🗑️ Card deleted." if res and res.status_code == 200 else "❌ Failed to delete card.")
-
-# --- Main Bot Setup ---
-app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help_command))
-app.add_handler(CommandHandler("list_boards", list_boards))
-app.add_handler(CommandHandler("list_cards", list_cards))
-app.add_handler(CommandHandler("add_card", add_card))
-app.add_handler(CommandHandler("move_card", move_card_cmd))
-app.add_handler(CommandHandler("comment_card", comment_card_cmd))
-app.add_handler(CommandHandler("delete_card", delete_card_cmd))
-
+# Run the bot
 if __name__ == "__main__":
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("list_boards", list_boards_button))
+    app.add_handler(CallbackQueryHandler(board_callback, pattern=r"^board:"))
+    app.add_handler(CallbackQueryHandler(list_callback, pattern=r"^list:"))
+
+    print("Bot is running...")
     app.run_polling()
