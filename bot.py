@@ -8,6 +8,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
+from dotenv import load_dotenv
+load_dotenv()
 
 # Logging
 logging.basicConfig(level=logging.INFO)
